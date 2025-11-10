@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, Complex
 
 
 def xyyz_from_detector_geometry(
@@ -224,8 +224,69 @@ def parallelepiped_form_factor(
     Fx = jnp.sinc(argx)
     Fy = jnp.sinc(argy)
     Fz = jnp.sinc(argz)
-    F = jnp.nan_to_num(delta_rho * V * Fx * Fy * Fz, nan=1.0)
+    F = jnp.nan_to_num(delta_rho * Fx * Fy * Fz, nan=1.0)  # *8/V
     return (F / F.max()) ** 2
+
+
+@jax.jit
+def parallelepiped_form_factor_complex(
+    qx_p: Float[Array, "N_x N_y"],
+    qy_p: Float[Array, "N_x N_y"],
+    qz_p: Float[Array, "N_x N_y"],
+    A: float,
+    B: float,
+    C: float,
+    delta_rho: float = 1.0,
+) -> Float[Array, "N_x N_y"]:
+    """
+    Calculate the analytical form factor for a homogeneous parallelepiped.
+
+    Computes the scattering amplitude and intensity for a rectangular
+    parallelepiped (box) aligned with the coordinate axes using the
+    analytical solution for the Fourier transform.
+
+    Parameters
+    ----------
+    qx_p, qy_p, qz_p : Float[Array, "N_x N_y"]
+        Arrays of scattering vector components in particle frame (same shape).
+        Should be in units of inverse meters (m⁻¹).
+    A, B, C : float
+        Side lengths of the parallelepiped along x, y, z axes in meters.
+        A is x-dimension, B is y-dimension, C is z-dimension.
+    delta_rho : float, optional
+        Electron density contrast between particle and solvent in
+        arbitrary units. Default is 1.0.
+
+    Returns
+    -------
+    intensity : Float[Array, "N_x N_y"]
+        Normalized scattering intensity |F(q)|² with same shape as input q arrays.
+        Values are normalized by the maximum intensity (forward scattering).
+
+    Notes
+    -----
+    - Uses the analytical form: F(q) = V * sinc(qx*A/2) * sinc(qy*B/2) * sinc(qz*C/2)
+    - Where V = A*B*C is the particle volume
+    - sinc(x) = sin(πx)/(πx) is the normalized sinc function
+    - The intensity shows characteristic oscillations due to particle shape
+    - Forward scattering (q=0) gives the total scattering power
+
+    Examples
+    --------
+    >>> # 20x20x20 nm cube
+    >>> intensity = parallelepiped_form_factor(qx, qy, qz, 20e-9, 20e-9, 20e-9)
+    >>> # Rectangular particle
+    >>> intensity = parallelepiped_form_factor(qx, qy, qz, 50e-9, 20e-9, 10e-9)
+    """
+    V = A * B * C
+    argx = 0.5 * qx_p * A
+    argy = 0.5 * qy_p * B
+    argz = 0.5 * qz_p * C
+    Fx = jnp.sinc(argx)
+    Fy = jnp.sinc(argy)
+    Fz = jnp.sinc(argz)
+    F = jnp.nan_to_num(delta_rho * Fx * Fy * Fz, nan=1.0)  # *8/V
+    return F
 
 
 @jax.jit
@@ -285,6 +346,65 @@ def ellipsoid_formfactor(
         delta_rho * (3 * (jnp.sin(qR) - qR * jnp.cos(qR))) / (qR**3), nan=1.0
     )
     return (F / F.max()) ** 2
+
+
+@jax.jit
+def ellipsoid_formfactor_complex(
+    qx: Float[Array, "N_x N_y"],
+    qy: Float[Array, "N_x N_y"],
+    qz: Float[Array, "N_x N_y"],
+    A: float,
+    B: float,
+    C: float,
+    delta_rho: float = 1,
+) -> Float[Array, "N_x N_y"]:
+    """
+    Calculate the analytical form factor for a homogeneous ellipsoid.
+
+    Computes the scattering intensity for an ellipsoid aligned with
+    coordinate axes using the analytical solution. The ellipsoid is
+    defined by three semi-axes A, B, C along x, y, z directions.
+
+    Parameters
+    ----------
+    qx, qy, qz : Float[Array, "N_x N_y"]
+        Arrays of scattering vector components in particle frame (same shape).
+        Should be in units of inverse meters (m⁻¹).
+    A, B, C : float
+        Semi-axes of the ellipsoid along x, y, z directions in meters.
+        The ellipsoid equation is: (x/A)² + (y/B)² + (z/C)² = 1
+    delta_rho : float, optional
+        Electron density contrast between particle and solvent in
+        arbitrary units. Default is 1.0.
+
+    Returns
+    -------
+    intensity : Float[Array, "N_x N_y"]
+        Scattering intensity |F(q)|² with same shape as input q arrays.
+        Values represent the scattered intensity at each q-vector.
+
+    Notes
+    -----
+    - Uses the analytical form: F(q) = V * 3(sin(qR) - qR*cos(qR))/(qR)³
+    - Where qR = sqrt((A*qx)² + (B*qy)² + (C*qz)²) is the effective q-radius
+    - V = (4/3)π*A*B*C is the ellipsoid volume
+    - For a sphere (A=B=C), this reduces to the spherical form factor
+    - The function handles the qR=0 case (forward scattering) properly
+
+    Examples
+    --------
+    >>> # Sphere with 20 nm radius
+    >>> intensity = ellipsoid_formfactor(qx, qy, qz, 20e-9, 20e-9, 20e-9)
+    >>> # Prolate ellipsoid (elongated along x)
+    >>> intensity = ellipsoid_formfactor(qx, qy, qz, 40e-9, 20e-9, 20e-9)
+    >>> # Oblate ellipsoid (flattened along z)
+    >>> intensity = ellipsoid_formfactor(qx, qy, qz, 30e-9, 30e-9, 10e-9)
+    """
+    qR = jnp.sqrt((qx * A) ** 2 + (qy * B) ** 2 + (qz * C) ** 2)
+    F = jnp.nan_to_num(
+        delta_rho * (3 * (jnp.sin(qR) - qR * jnp.cos(qR))) / (qR**3), nan=1.0
+    )
+    return F
 
 
 @jax.jit
@@ -393,6 +513,62 @@ def generate_ellipsoid_diffraction(
 
 
 @jax.jit
+def generate_ellipsoid_diffraction_complex(
+    q_xyz: Float[Array, "3 N_x N_y"],
+    A: float,
+    B: float,
+    C: float,
+    rx: float = 0,
+    ry: float = 0,
+    rz: float = 0,
+) -> Complex[Array, "N_x N_y"]:
+    """
+    Generate diffraction pattern for an ellipsoid with given parameters.
+
+    This function computes the theoretical X-ray scattering intensity for
+    a homogeneous ellipsoid with specified dimensions and orientation. The
+    calculation combines geometric rotation with analytical form factor computation.
+
+    Parameters
+    ----------
+    q_xyz : Float[Array, "3 N_x N_y"]
+        Array of shape (3, N_x, N_y) containing scattering vector components
+        in laboratory frame, in units of inverse meters (m⁻¹).
+    A, B, C : float
+        Semi-axes of the ellipsoid along x, y, z directions in meters.
+        The ellipsoid equation is: (x/A)² + (y/B)² + (z/C)² = 1
+    rx, ry, rz : float
+        Euler rotation angles in degrees around x, y, z axes respectively.
+        Defines the orientation of the ellipsoid relative to the laboratory frame.
+
+    Returns
+    -------
+    intensity : Float[Array, "N_x N_y"]
+        Scattering intensity pattern with shape (N_x, N_y) matching the
+        detector geometry. Values represent |F(q)|² where F is the form factor.
+
+    Notes
+    -----
+    - Uses ZYX Euler angle convention for rotations
+    - The intensity is normalized by the maximum value (forward scattering)
+    - Handles the q=0 singularity automatically via jnp.nan_to_num
+    - Suitable for single-particle diffraction simulation
+
+    Examples
+    --------
+    >>> # 20x40x40 nm ellipsoid rotated 30° around x-axis
+    >>> intensity = generate_ellipsoid_diffraction(q_vectors, 20e-9, 40e-9, 40e-9, 30, 0, 0)
+    >>> # Spherical particle (A=B=C)
+    >>> intensity = generate_ellipsoid_diffraction(q_vectors, 25e-9, 25e-9, 25e-9, 0, 0, 0)
+    """
+    q_rot = rotate_q_space(q_xyz, get_rotation_matrix(rx, ry, rz))
+    complex_scattering = ellipsoid_formfactor_complex(
+        q_rot[0, :, :], q_rot[1, :, :], q_rot[2, :, :], A, B, C
+    )
+    return complex_scattering
+
+
+@jax.jit
 def generate_sphere_diffraction(q_xyz, r):
     return generate_ellipsoid_diffraction(q_xyz, r, r, r, 0, 0, 0)
 
@@ -452,6 +628,63 @@ def generate_parallelepiped_diffraction(
         q_rot[0, :, :], q_rot[1, :, :], q_rot[2, :, :], A, B, C
     )
     return intensity
+
+
+@jax.jit
+def generate_parallelepiped_diffraction_complex(
+    q_xyz: Float[Array, "3 N_x N_y"],
+    A: float,
+    B: float,
+    C: float,
+    rx: float = 0,
+    ry: float = 0,
+    rz: float = 0,
+) -> Complex[Array, "N_x N_y"]:
+    """
+    Generate diffraction pattern for a parallelepiped with given parameters.
+
+    This function computes the theoretical X-ray scattering intensity for
+    a homogeneous rectangular parallelepiped (box) with specified dimensions
+    and orientation. The calculation uses analytical form factors for efficiency.
+
+    Parameters
+    ----------
+    q_xyz : Float[Array, "3 N_x N_y"]
+        Array of shape (3, N_x, N_y) containing scattering vector components
+        in laboratory frame, in units of inverse meters (m⁻¹).
+    A, B, C : float
+        Side lengths of the parallelepiped along x, y, z axes in meters.
+        A is x-dimension, B is y-dimension, C is z-dimension.
+    rx, ry, rz : float
+        Euler rotation angles in degrees around x, y, z axes respectively.
+        Defines the orientation of the box relative to the laboratory frame.
+
+    Returns
+    -------
+    intensity : Float[Array, "N_x N_y"]
+        Scattering intensity pattern with shape (N_x, N_y) matching the
+        detector geometry. Values represent |F(q)|² where F is the form factor.
+
+    Notes
+    -----
+    - Uses ZYX Euler angle convention for rotations
+    - Form factor based on product of sinc functions along each axis
+    - Shows characteristic oscillations and sharp minima due to box edges
+    - The intensity is normalized by the maximum value (forward scattering)
+    - Suitable for crystalline or rectangular nanoparticle simulation
+
+    Examples
+    --------
+    >>> # 20x20x20 nm cube
+    >>> intensity = generate_parallelepiped_diffraction(q_vectors, 20e-9, 20e-9, 20e-9, 0, 0, 0)
+    >>> # Rectangular rod rotated 45° around z-axis
+    >>> intensity = generate_parallelepiped_diffraction(q_vectors, 50e-9, 10e-9, 10e-9, 0, 0, 45)
+    """
+    q_rot = rotate_q_space(q_xyz, get_rotation_matrix(rx, ry, rz))
+    complex_scattering = parallelepiped_form_factor_complex(
+        q_rot[0, :, :], q_rot[1, :, :], q_rot[2, :, :], A, B, C
+    )
+    return complex_scattering
 
 
 def fib_lattice_sq(
